@@ -1,0 +1,75 @@
+# ==============================================================================
+# InSpace Standalone Inference Engine - .gitignore
+# ==============================================================================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+
+# C extensions & intermediate build files
+*.obj
+*.o
+*.a
+*.lib
+*.dylib
+
+# Packaging & builds
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
+
+# Testing, type checking & linting
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Heavy model checkpoints (mounted or downloaded from HF)
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Datasets, local inputs, and inference outputs
+data/
+output/
+outputs/
+
+# Large compressed archives
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+
+# Large Wheels (>100MB GitHub limit - auto-downloaded on build by BUILD_FALLBACK.sh)
+wheels/flash_attn*.whl
+
+# IDEs & Operating System files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# Cache & Hugging Face local caches
+.cache/
+hf_cache/
+
+# Local logs & scratch files
+*.log
+scratch/

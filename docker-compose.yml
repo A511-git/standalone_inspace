@@ -1,0 +1,65 @@
+services:
+  # ---------------------------------------------------------------------------
+  # Headless CLI Service for automated / scripted pipeline inference
+  # ---------------------------------------------------------------------------
+  inspace-cli:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: inspace-inference:latest
+    container_name: inspace_cli
+    environment:
+      - CHECKPOINT_DIR=/checkpoints
+      - INSPACE_OUTPUT=/data/outputs
+      - CUDA_VISIBLE_DEVICES=0
+      - ATTN_BACKEND=flash_attn
+      - SPARSE_ATTN_BACKEND=flash_attn
+      - SPARSE_CONV_BACKEND=flex_gemm
+      - SPCONV_ALGO=native
+      - HF_TOKEN=${HF_TOKEN:-}
+    volumes:
+      - ./checkpoints:/checkpoints
+      - ./data:/data
+      - ./outputs:/data/outputs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: ["-i", "/data/input.jpg", "-o", "/data/outputs"]
+
+  # ---------------------------------------------------------------------------
+  # Interactive Gradio Web UI on port 7860
+  # ---------------------------------------------------------------------------
+  inspace-gradio:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: inspace-inference:latest
+    container_name: inspace_gradio
+    ports:
+      - "7860:7860"
+    environment:
+      - CHECKPOINT_DIR=/checkpoints
+      - INSPACE_OUTPUT=/data/outputs
+      - CUDA_VISIBLE_DEVICES=0
+      - ATTN_BACKEND=flash_attn
+      - SPARSE_ATTN_BACKEND=flash_attn
+      - SPARSE_CONV_BACKEND=flex_gemm
+      - SPCONV_ALGO=native
+      - HF_TOKEN=${HF_TOKEN:-}
+    volumes:
+      - ./checkpoints:/checkpoints
+      - ./data:/data
+      - ./outputs:/data/outputs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: ["--mode", "gradio", "--port", "7860"]
+

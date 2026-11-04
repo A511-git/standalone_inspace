@@ -1,0 +1,50 @@
+# ==============================================================================
+# InSpace Standalone Inference Engine - .dockerignore
+# Keeps Docker build context fast, lightweight, and isolated
+# ==============================================================================
+
+# Version control
+.git/
+.gitignore
+.gitattributes
+
+# Python bytecode & virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+.venv/
+env/
+venv/
+
+# Build artifacts & egg metadata
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Testing, coverage & lint caches
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+tests/
+
+# Large runtime storage (managed via Docker volume mounts)
+checkpoints/
+data/
+output/
+outputs/
+
+# Documentation & editor configs
+*.md
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Docker compose & build configuration itself
+docker-compose.yml
+.dockerignore
