@@ -23,26 +23,28 @@ fi
 
 # --- Tier 2: Download Pre-built sm_120 Wheel ---
 echo "[Tier 2] Local wheel not found. Attempting pre-built wheel download from GitHub Releases..."
-WHEEL_URL="https://github.com/HenryZ838978/flash-attn-blackwell/releases/download/v2.8.3/flash_attn-2.8.3+cu128sm120-cp310-cp310-linux_x86_64.whl"
 WHEEL_FILE="$SCRIPT_DIR/flash_attn-2.8.3+cu128sm120-cp310-cp310-linux_x86_64.whl"
+RELEASE_TAGS=("v2.8.3-sm120" "v2.8.3")
 
-if command -v curl >/dev/null 2>&1; then
-    if curl -fSL "$WHEEL_URL" -o "$WHEEL_FILE"; then
-        echo ">>> [Tier 2 SUCCESS] Downloaded sm_120 wheel from GitHub Releases."
-        ls -lh "$WHEEL_FILE"
-        exit 0
-    else
-        echo ">>> [Tier 2 WARNING] Download failed or timed out."
+for TAG in "${RELEASE_TAGS[@]}"; do
+    WHEEL_URL="https://github.com/HenryZ838978/flash-attn-blackwell/releases/download/${TAG}/flash_attn-2.8.3+cu128sm120-cp310-cp310-linux_x86_64.whl"
+    echo "[Tier 2] Trying: $WHEEL_URL"
+    if command -v curl >/dev/null 2>&1; then
+        if curl -fSL "$WHEEL_URL" -o "$WHEEL_FILE"; then
+            echo ">>> [Tier 2 SUCCESS] Downloaded sm_120 wheel from GitHub Releases (${TAG})."
+            ls -lh "$WHEEL_FILE"
+            exit 0
+        fi
+    elif command -v wget >/dev/null 2>&1; then
+        if wget -q --timeout=30 "$WHEEL_URL" -O "$WHEEL_FILE"; then
+            echo ">>> [Tier 2 SUCCESS] Downloaded sm_120 wheel from GitHub Releases (${TAG})."
+            ls -lh "$WHEEL_FILE"
+            exit 0
+        fi
     fi
-elif command -v wget >/dev/null 2>&1; then
-    if wget -q --timeout=30 "$WHEEL_URL" -O "$WHEEL_FILE"; then
-        echo ">>> [Tier 2 SUCCESS] Downloaded sm_120 wheel from GitHub Releases."
-        ls -lh "$WHEEL_FILE"
-        exit 0
-    else
-        echo ">>> [Tier 2 WARNING] Download failed or timed out."
-    fi
-fi
+done
+
+echo ">>> [Tier 2 WARNING] Download failed or timed out."
 
 # --- Tier 3: Source Compilation Fallback ---
 echo "[Tier 3] Compiling flash-attention v2.8.3 from source for sm_120..."
@@ -52,6 +54,8 @@ export FLASH_ATTN_CUDA_ARCHS="120"
 export MAX_JOBS=2
 export NVCC_THREADS=1
 
+# Ensure pip/build tools exist in environment
+python -m ensurepip --upgrade 2>/dev/null || uv pip install pip setuptools wheel 2>/dev/null || true
 python -m pip wheel "git+https://github.com/Dao-AILab/flash-attention.git@v2.8.3" \
     --no-deps \
     --no-build-isolation \
