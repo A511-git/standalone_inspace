@@ -87,3 +87,39 @@ def test_model_manager_lazy_caching_and_device():
     # Test unloading
     mm._unload("stage1_denoiser")
     assert mm.stage1_denoiser is None
+
+
+@pytest.mark.unit
+def test_ensure_inspace_checkpoints_nested_cache_sync(tmp_path, monkeypatch, capsys):
+    """Verify ensure_inspace_checkpoints discovers nested ckpts/, acknowledges cache, and flattens."""
+    ckpt_dir = tmp_path / "checkpoints"
+    nested_dir = ckpt_dir / "ckpts"
+    
+    needed = [
+        'erp_ss_flow_img_dit_L_16l8_bf16_spatial',
+        'bbox_centerpoint',
+        'erp_slat_flow_img2shape_asset_aware_bf16',
+        'erp_slat_flow_imgshape2tex_asset_aware_bf16',
+    ]
+    for comp in needed:
+        p = nested_dir / comp
+        p.mkdir(parents=True)
+        (p / "model_step0010000.pt").touch()
+
+    # If it tries to download, raise an error to prove it didn't need to download
+    import huggingface_hub
+    def fail_download(*args, **kwargs):
+        raise AssertionError("snapshot_download should NOT be called when cache is present!")
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fail_download)
+
+    res = ensure_inspace_checkpoints(ckpt_dir=str(ckpt_dir))
+    assert res is True
+
+    # Verify output acknowledges cache
+    captured = capsys.readouterr()
+    assert "verified (cached in" in captured.out or "cached" in captured.out
+
+    # Verify both flat and nested paths exist
+    for comp in needed:
+        assert (ckpt_dir / comp).exists()
+        assert (ckpt_dir / comp / "model_step0010000.pt").exists()
