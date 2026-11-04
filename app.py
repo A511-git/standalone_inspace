@@ -8,6 +8,10 @@ Supports full granular CLI options per stage and interactive Gradio web UI.
 
 import os
 import sys
+
+# Force headless matplotlib backend to prevent errors in Jupyter/Kaggle environments
+os.environ["MPLBACKEND"] = "Agg"
+
 import time
 import json
 import shutil

@@ -102,6 +102,7 @@ def ensure_demo_samples(data_dir, repo_id=DEMO_SAMPLES_REPO):
     """
     name = os.path.basename(os.path.normpath(data_dir))
     if os.path.isdir(data_dir) and any(os.scandir(data_dir)):
+        log(f"[InSpace] Demo samples verified (cached in {data_dir}).")
         return True
     try:
         from huggingface_hub import snapshot_download
@@ -154,9 +155,11 @@ def resolve_ckpt_dir(component_name):
     ])
     for c in candidates:
         if os.path.isdir(c):
-            if glob.glob(os.path.join(c, '*.pt')) or glob.glob(os.path.join(c, 'ckpts', '*.pt')):
+            if glob.glob(os.path.join(c, '*.pt')) or glob.glob(os.path.join(c, 'ckpts', '*.pt')) or glob.glob(os.path.join(c, '**', '*.pt'), recursive=True):
                 return c
     if base_dir:
+        if os.path.isdir(os.path.join(base_dir, 'ckpts', component_name)):
+            return os.path.join(base_dir, 'ckpts', component_name)
         return os.path.join(base_dir, component_name)
     return os.path.join(PROJECT_ROOT, 'ckpts', component_name)
 
@@ -164,6 +167,7 @@ def resolve_ckpt_dir(component_name):
 def ensure_inspace_checkpoints(ckpt_dir=None, repo_id=DEMO_SAMPLES_REPO, token=None):
     """
     Ensure InSpace pretrained checkpoints exist. If missing, auto-download from Hugging Face.
+    Handles both flat (<ckpt_dir>/<comp>) and nested (<ckpt_dir>/ckpts/<comp>) layouts automatically.
     """
     if ckpt_dir is None:
         ckpt_dir = os.environ.get('CHECKPOINT_DIR', os.path.join(PROJECT_ROOT, 'ckpts'))
@@ -175,17 +179,43 @@ def ensure_inspace_checkpoints(ckpt_dir=None, repo_id=DEMO_SAMPLES_REPO, token=N
         'erp_slat_flow_imgshape2tex_asset_aware_bf16',
     ]
 
+    def _sync_nested_ckpts():
+        """Ensure both ckpt_dir/<comp> and ckpt_dir/ckpts/<comp> exist and are linked/accessible."""
+        nested = os.path.join(ckpt_dir, 'ckpts')
+        if os.path.isdir(nested) and os.path.abspath(nested) != os.path.abspath(ckpt_dir):
+            for item in os.listdir(nested):
+                src = os.path.join(nested, item)
+                dst = os.path.join(ckpt_dir, item)
+                if not os.path.exists(dst):
+                    try:
+                        shutil.move(src, dst)
+                    except Exception:
+                        pass
+                # Keep backward compatible link inside ckpts/ if possible
+                if not os.path.exists(src) and os.path.exists(dst):
+                    try:
+                        os.symlink(dst, src, target_is_directory=os.path.isdir(dst))
+                    except Exception:
+                        pass
+
+    # Flatten existing download if nested under ckpts/
+    _sync_nested_ckpts()
+
     missing = False
+    found_count = 0
     for comp in needed_components:
         c_dir = os.path.join(ckpt_dir, comp)
         alt_dir = os.path.join(ckpt_dir, 'ckpts', comp)
         has_pt = (os.path.isdir(c_dir) and bool(glob.glob(os.path.join(c_dir, '**/*.pt'), recursive=True))) or \
                  (os.path.isdir(alt_dir) and bool(glob.glob(os.path.join(alt_dir, '**/*.pt'), recursive=True)))
-        if not has_pt:
+        if has_pt:
+            found_count += 1
+        else:
             missing = True
-            break
 
     if not missing:
+        _sync_nested_ckpts()
+        log(f"[InSpace] All {found_count}/{len(needed_components)} pretrained checkpoints verified (cached in {ckpt_dir}).")
         return True
 
     log(f"[InSpace] Pretrained checkpoints missing in {ckpt_dir} -> auto-downloading from Hugging Face ({repo_id})...")
@@ -200,10 +230,12 @@ def ensure_inspace_checkpoints(ckpt_dir=None, repo_id=DEMO_SAMPLES_REPO, token=N
             local_dir=ckpt_dir,
             token=hf_token,
         )
-        log("[InSpace] Pretrained checkpoints successfully downloaded from Hugging Face.")
+        _sync_nested_ckpts()
+        log(f"[InSpace] Pretrained checkpoints successfully downloaded & cached in {ckpt_dir}.")
         return True
     except Exception as e:
         log(f"[InSpace] Notice: Hugging Face auto-download skipped or failed ({e}). Proceeding with existing local paths.")
+        _sync_nested_ckpts()
         return False
 
 
@@ -225,7 +257,7 @@ DEFAULT_TEX_CKPT_DIR = resolve_ckpt_dir('erp_slat_flow_imgshape2tex_asset_aware_
 # ============================================================
 
 def find_latest_ckpt(ckpt_dir, prefix='denoiser', use_ema=True, ema_rate=0.9999):
-    """Find the latest checkpoint step in ckpt_dir/ckpts/ or ckpt_dir/."""
+    """Find the latest checkpoint step in ckpt_dir/ckpts/, ckpt_dir/, or parallel nested layouts."""
     patterns = []
     if use_ema:
         patterns.append(f'{prefix}_ema{ema_rate}_step*.pt')
@@ -234,10 +266,20 @@ def find_latest_ckpt(ckpt_dir, prefix='denoiser', use_ema=True, ema_rate=0.9999)
         patterns.append(f'{prefix}_step*.pt')
 
     files = []
-    # Search ckpt_dir/ckpts first, then ckpt_dir, then nested ckpts dirs
+    parent = os.path.dirname(ckpt_dir) if ckpt_dir else ""
+    bname = os.path.basename(ckpt_dir) if ckpt_dir else ""
+    alt_nested = os.path.join(parent, 'ckpts', bname) if parent else None
+    alt_flat = os.path.join(os.path.dirname(parent), bname) if os.path.basename(parent) == 'ckpts' else None
+
+    # Search ckpt_dir/ckpts first, then ckpt_dir, then alternate nested/flat locations
     search_dirs = [os.path.join(ckpt_dir, 'ckpts'), ckpt_dir]
+    if alt_nested and alt_nested not in search_dirs:
+        search_dirs.extend([os.path.join(alt_nested, 'ckpts'), alt_nested])
+    if alt_flat and alt_flat not in search_dirs:
+        search_dirs.extend([os.path.join(alt_flat, 'ckpts'), alt_flat])
+
     for d in search_dirs:
-        if os.path.isdir(d):
+        if d and os.path.isdir(d):
             for pat in patterns:
                 matched = glob.glob(os.path.join(d, pat))
                 if matched:
@@ -247,15 +289,19 @@ def find_latest_ckpt(ckpt_dir, prefix='denoiser', use_ema=True, ema_rate=0.9999)
             break
 
     if len(files) == 0:
-        # Recursive fallback
-        for pat in patterns:
-            matched = glob.glob(os.path.join(ckpt_dir, '**', pat), recursive=True)
-            if matched:
-                files.extend(matched)
+        # Recursive fallback across all candidate directories
+        for d in [ckpt_dir, alt_nested, alt_flat]:
+            if d and os.path.isdir(d):
+                for pat in patterns:
+                    matched = glob.glob(os.path.join(d, '**', pat), recursive=True)
+                    if matched:
+                        files.extend(matched)
+                        break
+            if files:
                 break
 
     if len(files) == 0:
-        raise FileNotFoundError(f"No checkpoint files matching '{patterns[0]}' found in {ckpt_dir}")
+        raise FileNotFoundError(f"No checkpoint files matching '{patterns[0]}' found in {ckpt_dir} (searched: {search_dirs})")
     steps = [int(os.path.basename(f).split('step')[-1].split('.')[0]) for f in files]
     return max(steps)
 
@@ -266,12 +312,22 @@ def load_denoiser(config, ckpt_dir, ckpt_step, device='cuda', use_ema=True, ema_
     denoiser = getattr(models, model_config['name'])(**model_config['args'])
     denoiser = denoiser.to(device)
 
+    parent = os.path.dirname(ckpt_dir) if ckpt_dir else ""
+    bname = os.path.basename(ckpt_dir) if ckpt_dir else ""
+    alt_nested = os.path.join(parent, 'ckpts', bname) if parent else None
+    alt_flat = os.path.join(os.path.dirname(parent), bname) if os.path.basename(parent) == 'ckpts' else None
+
+    candidate_dirs = [os.path.join(ckpt_dir, 'ckpts'), ckpt_dir]
+    if alt_nested:
+        candidate_dirs.extend([os.path.join(alt_nested, 'ckpts'), alt_nested])
+    if alt_flat:
+        candidate_dirs.extend([os.path.join(alt_flat, 'ckpts'), alt_flat])
+
     possible_paths = []
-    if use_ema:
-        possible_paths.append(os.path.join(ckpt_dir, 'ckpts', f'denoiser_ema{ema_rate}_step{ckpt_step:07d}.pt'))
-        possible_paths.append(os.path.join(ckpt_dir, f'denoiser_ema{ema_rate}_step{ckpt_step:07d}.pt'))
-    possible_paths.append(os.path.join(ckpt_dir, 'ckpts', f'denoiser_step{ckpt_step:07d}.pt'))
-    possible_paths.append(os.path.join(ckpt_dir, f'denoiser_step{ckpt_step:07d}.pt'))
+    for d in candidate_dirs:
+        if use_ema:
+            possible_paths.append(os.path.join(d, f'denoiser_ema{ema_rate}_step{ckpt_step:07d}.pt'))
+        possible_paths.append(os.path.join(d, f'denoiser_step{ckpt_step:07d}.pt'))
 
     ckpt_path = None
     for p in possible_paths:
@@ -282,13 +338,17 @@ def load_denoiser(config, ckpt_dir, ckpt_step, device='cuda', use_ema=True, ema_
     if ckpt_path is None:
         # Search recursively as fallback
         target_name = f'step{ckpt_step:07d}.pt'
-        matches = glob.glob(os.path.join(ckpt_dir, '**', f'*{target_name}'), recursive=True)
-        if matches:
-            ckpt_path = matches[0]
+        for d in [ckpt_dir, alt_nested, alt_flat]:
+            if d and os.path.isdir(d):
+                matches = glob.glob(os.path.join(d, '**', f'*{target_name}'), recursive=True)
+                if matches:
+                    ckpt_path = matches[0]
+                    break
 
     if ckpt_path is None or not os.path.exists(ckpt_path):
         raise FileNotFoundError(f"Checkpoint not found in candidates: {possible_paths}")
 
+    log(f"  [InSpace] Loaded denoiser checkpoint: {ckpt_path}")
     state_dict = torch.load(ckpt_path, map_location=device, weights_only=True)
     denoiser.load_state_dict(state_dict)
     denoiser.eval()
@@ -619,9 +679,10 @@ class ModelManager:
             self._sampler = FlowEulerGuidanceIntervalSampler(sigma_min=sigma_min)
         return self._sampler
 
-    def get_erp_encoder(self, config_path=DEFAULT_STAGE1_CONFIG):
+    def get_erp_encoder(self, config_path=None):
         """Load or return cached ERP encoder (persistent across stages)."""
         if self.erp_encoder is None:
+            config_path = config_path or DEFAULT_STAGE1_CONFIG
             config = self._load_config(config_path)
             trainer_config = config['trainer']['args']
             self.erp_encoder = ERPImageEncoder(
@@ -630,8 +691,10 @@ class ModelManager:
             ).to(self.device)
         return self.erp_encoder
 
-    def get_stage1(self, config_path=DEFAULT_STAGE1_CONFIG, ckpt_dir=DEFAULT_STAGE1_CKPT_DIR):
+    def get_stage1(self, config_path=None, ckpt_dir=None):
         """Load Stage 1 denoiser + SS decoder. Unloads Stage 2 if needed."""
+        config_path = config_path or DEFAULT_STAGE1_CONFIG
+        ckpt_dir = ckpt_dir or resolve_ckpt_dir('erp_ss_flow_img_dit_L_16l8_bf16_spatial')
         if self.stage1_denoiser is None:
             self._unload('stage2_shape_denoiser', 'stage2_tex_denoiser', 'bbox_model',
                          'shape_dec', 'pbr_dec', 'tex_shape_dec')
@@ -646,8 +709,9 @@ class ModelManager:
             self.ss_decoder = models.from_pretrained(pretrained_ss_dec).to(self.device).eval()
         return self.stage1_denoiser, self.ss_decoder
 
-    def get_ss_encoder(self, config_path=DEFAULT_STAGE1_CONFIG):
+    def get_ss_encoder(self, config_path=None):
         """Load SS encoder (for SDEdit inline step9+10)."""
+        config_path = config_path or DEFAULT_STAGE1_CONFIG
         if self.ss_encoder is None:
             config = self._load_config(config_path)
             pretrained_ss_enc = config['dataset']['args'].get(
@@ -657,8 +721,10 @@ class ModelManager:
             self.ss_encoder = models.from_pretrained(pretrained_ss_enc).to(self.device).eval()
         return self.ss_encoder
 
-    def get_bbox_model(self, config_path=DEFAULT_BBOX_CONFIG, ckpt_dir=DEFAULT_BBOX_CKPT_DIR):
+    def get_bbox_model(self, config_path=None, ckpt_dir=None):
         """Load BBox CenterPoint model."""
+        config_path = config_path or DEFAULT_BBOX_CONFIG
+        ckpt_dir = ckpt_dir or resolve_ckpt_dir('bbox_centerpoint')
         if self.bbox_model is None:
             from trellis2.models.bbox_centerpoint import BBoxCenterPoint
             config = self._load_config(config_path)
@@ -666,29 +732,46 @@ class ModelManager:
             self.bbox_model = BBoxCenterPoint(**model_args).to(self.device).eval()
 
             ckpt_step = find_latest_ckpt(ckpt_dir, prefix='bbox_centerpoint')
-            possible_paths = [
-                os.path.join(ckpt_dir, 'ckpts', f'bbox_centerpoint_ema0.9999_step{ckpt_step:07d}.pt'),
-                os.path.join(ckpt_dir, f'bbox_centerpoint_ema0.9999_step{ckpt_step:07d}.pt'),
-                os.path.join(ckpt_dir, 'ckpts', f'bbox_centerpoint_step{ckpt_step:07d}.pt'),
-                os.path.join(ckpt_dir, f'bbox_centerpoint_step{ckpt_step:07d}.pt'),
-            ]
+            parent = os.path.dirname(ckpt_dir) if ckpt_dir else ""
+            bname = os.path.basename(ckpt_dir) if ckpt_dir else ""
+            alt_nested = os.path.join(parent, 'ckpts', bname) if parent else None
+            alt_flat = os.path.join(os.path.dirname(parent), bname) if os.path.basename(parent) == 'ckpts' else None
+
+            candidate_dirs = [os.path.join(ckpt_dir, 'ckpts'), ckpt_dir]
+            if alt_nested:
+                candidate_dirs.extend([os.path.join(alt_nested, 'ckpts'), alt_nested])
+            if alt_flat:
+                candidate_dirs.extend([os.path.join(alt_flat, 'ckpts'), alt_flat])
+
+            possible_paths = []
+            for d in candidate_dirs:
+                possible_paths.append(os.path.join(d, f'bbox_centerpoint_ema0.9999_step{ckpt_step:07d}.pt'))
+                possible_paths.append(os.path.join(d, f'bbox_centerpoint_step{ckpt_step:07d}.pt'))
+
             ckpt_path = None
             for p in possible_paths:
                 if os.path.exists(p):
                     ckpt_path = p
                     break
             if ckpt_path is None:
-                matches = glob.glob(os.path.join(ckpt_dir, '**', f'*step{ckpt_step:07d}.pt'), recursive=True)
-                if matches:
-                    ckpt_path = matches[0]
+                target_name = f'step{ckpt_step:07d}.pt'
+                for d in [ckpt_dir, alt_nested, alt_flat]:
+                    if d and os.path.isdir(d):
+                        matches = glob.glob(os.path.join(d, '**', f'*{target_name}'), recursive=True)
+                        if matches:
+                            ckpt_path = matches[0]
+                            break
             if ckpt_path is None or not os.path.exists(ckpt_path):
                 raise FileNotFoundError(f"BBox checkpoint not found in candidates: {possible_paths}")
+            log(f"  [InSpace] Loaded bbox checkpoint: {ckpt_path}")
             ckpt = torch.load(ckpt_path, map_location=self.device, weights_only=True)
             self.bbox_model.load_state_dict(ckpt, strict=True)
         return self.bbox_model
 
-    def get_stage2_shape(self, config_path=DEFAULT_SHAPE_CONFIG, ckpt_dir=DEFAULT_SHAPE_CKPT_DIR):
+    def get_stage2_shape(self, config_path=None, ckpt_dir=None):
         """Load Stage 2 shape denoiser. Unloads Stage 1 denoiser."""
+        config_path = config_path or DEFAULT_SHAPE_CONFIG
+        ckpt_dir = ckpt_dir or resolve_ckpt_dir('erp_slat_flow_img2shape_asset_aware_bf16')
         if self.stage2_shape_denoiser is None:
             self._unload('stage1_denoiser', 'ss_decoder', 'stage2_tex_denoiser')
             config = self._load_config(config_path)
@@ -696,8 +779,10 @@ class ModelManager:
             self.stage2_shape_denoiser = load_denoiser(config, ckpt_dir, ckpt_step, self.device)
         return self.stage2_shape_denoiser
 
-    def get_stage2_texture(self, config_path=DEFAULT_TEX_CONFIG, ckpt_dir=DEFAULT_TEX_CKPT_DIR):
+    def get_stage2_texture(self, config_path=None, ckpt_dir=None):
         """Load Stage 2 texture denoiser. Unloads Stage 1 and shape denoiser."""
+        config_path = config_path or DEFAULT_TEX_CONFIG
+        ckpt_dir = ckpt_dir or resolve_ckpt_dir('erp_slat_flow_imgshape2tex_asset_aware_bf16')
         if self.stage2_tex_denoiser is None:
             self._unload('stage1_denoiser', 'ss_decoder', 'stage2_shape_denoiser')
             config = self._load_config(config_path)
@@ -705,8 +790,9 @@ class ModelManager:
             self.stage2_tex_denoiser = load_denoiser(config, ckpt_dir, ckpt_step, self.device)
         return self.stage2_tex_denoiser
 
-    def get_shape_decoder(self, config_path=DEFAULT_SHAPE_CONFIG):
+    def get_shape_decoder(self, config_path=None):
         """Load shape SLat decoder."""
+        config_path = config_path or DEFAULT_SHAPE_CONFIG
         if self.shape_dec is None:
             self._unload('stage1_denoiser', 'ss_decoder',
                          'stage2_shape_denoiser', 'stage2_tex_denoiser')
@@ -724,8 +810,9 @@ class ModelManager:
             log(f"  Shape decoder loaded: pretrained={pretrained}, resolution={resolution}")
         return self.shape_dec
 
-    def get_texture_decoders(self, config_path=DEFAULT_TEX_CONFIG):
+    def get_texture_decoders(self, config_path=None):
         """Load texture shape decoder + PBR decoder."""
+        config_path = config_path or DEFAULT_TEX_CONFIG
         if self.tex_shape_dec is None or self.pbr_dec is None:
             self._unload('stage1_denoiser', 'ss_decoder',
                          'stage2_shape_denoiser', 'stage2_tex_denoiser', 'shape_dec')
