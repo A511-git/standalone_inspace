@@ -32,9 +32,11 @@ RUN uv pip install \
     --index-url https://download.pytorch.org/whl/cu128
 
 # Install standard requirements
+WORKDIR /tmp
 COPY requirements.txt /tmp/requirements.txt
 COPY third_party/ /tmp/third_party/
-RUN uv pip install \
+COPY third_party/ /third_party/
+RUN cd /tmp && uv pip install \
     --python /opt/venv/bin/python \
     -r /tmp/requirements.txt
 
